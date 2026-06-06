@@ -518,4 +518,4 @@ with tab_savings:
 
 st.markdown("<div style='text-align:center;color:#94a3b8;margin-top:22px;font-size:12px'>"
             "CareLens AI · Cost of Care Intelligence · Snowflake Cortex · Claude 4 Sonnet</div>",
-            unsafe_allow_html=True) 
+            unsafe_allow_html=True)
