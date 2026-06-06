@@ -84,14 +84,22 @@ def cdf(sql):
 
 def ai(prompt, model=MODEL):
     safe = prompt.replace("$$", "")
-    out = session.sql(f"SELECT AI_COMPLETE('{model}', $${safe}$$) AS R").collect()[0]["R"]
-    out = (out or "").strip()
-    if len(out) >= 2 and out[0] == '"' and out[-1] == '"':
+    for attempt in range(2):
         try:
-            out = json.loads(out)
+            out = session.sql(f"SELECT AI_COMPLETE('{model}', $${safe}$$) AS R").collect()[0]["R"]
+            out = (out or "").strip()
+            if len(out) >= 2 and out[0] == '"' and out[-1] == '"':
+                try:
+                    out = json.loads(out)
+                except Exception:
+                    out = out[1:-1]
+            return out
         except Exception:
-            out = out[1:-1]
-    return out
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            return ""
+    return ""
 
 
 def money(x):
@@ -190,9 +198,10 @@ def nl_to_sql(q, schema):
          "\n\nRules:\n1. Fully qualify tables as DATABASE.SCHEMA.TABLE.\n"
          "2. These reserved-word columns must be double quoted in uppercase: \"START\",\"STOP\",\"END\","
          "\"SYSTEM\",\"DATE\",\"STATUS\",\"CODE\",\"DESCRIPTION\",\"VALUE\".\n"
-         "3. Cost is CLAIMS.PUBLIC.ENCOUNTERS.TOTAL_CLAIM_COST and PAYER_COVERAGE. For names, join facility "
-         "ENCOUNTERS.ORGANIZATION=ORGANIZATIONS.ID (NAME) and provider ENCOUNTERS.PROVIDER=PROVIDERS.ID "
-         "(NAME, SPECIALITY). Do not use payer. Never return raw UUIDs.\n"
+         "3. Cost is CLAIMS.PUBLIC.ENCOUNTERS.TOTAL_CLAIM_COST and PAYER_COVERAGE. For facility names join "
+         "ENCOUNTERS.ORGANIZATION=AUTH_DB.UM.ORG_DIM.ID (NAME); use ORG_DIM, never CLAIMS.PUBLIC.ORGANIZATIONS "
+         "which has duplicate rows. For provider names join ENCOUNTERS.PROVIDER=PROVIDERS.ID (NAME, SPECIALITY). "
+         "Do not use payer. Never return raw UUIDs.\n"
          "4. Prefer GROUP BY aggregations, alias to clean names, add LIMIT 1000.\n"
          "5. Return ONLY raw SQL, no markdown.\n\nQuestion: " + q)
     return clean_sql(ai(p))
@@ -372,7 +381,7 @@ try:
         if kd == "Top records":
             rec = cdf("""SELECT o.NAME AS FACILITY, e."START"::DATE AS SERVICE_DATE, e.ENCOUNTERCLASS AS SETTING,
                                 COALESCE(e.REASONDESCRIPTION,'—') AS CLINICAL_REASON, e.TOTAL_CLAIM_COST AS BILLED
-                         FROM CLAIMS.PUBLIC.ENCOUNTERS e JOIN CLAIMS.PUBLIC.ORGANIZATIONS o ON o.ID=e.ORGANIZATION
+                         FROM CLAIMS.PUBLIC.ENCOUNTERS e JOIN AUTH_DB.UM.ORG_DIM o ON o.ID=e.ORGANIZATION
                          ORDER BY e.TOTAL_CLAIM_COST DESC LIMIT 50""")
             st.markdown(f"<div class='section'>{kd}</div>", unsafe_allow_html=True)
             st.dataframe(money_cols(rec, ["BILLED"]), use_container_width=True, height=300)
@@ -429,8 +438,8 @@ with tab_ask:
 DIMS = {
     "Encounter Class": dict(expr="e.ENCOUNTERCLASS", join="", filt="e.ENCOUNTERCLASS", chart="bar",
                             srcname="CLAIMS.PUBLIC.ENCOUNTERS", keys=""),
-    "Facility": dict(expr="o.NAME", join="JOIN CLAIMS.PUBLIC.ORGANIZATIONS o ON o.ID=e.ORGANIZATION",
-                     filt="o.NAME", chart="hbar", srcname="ENCOUNTERS join ORGANIZATIONS", keys="ORGANIZATION=ID"),
+    "Facility": dict(expr="o.NAME", join="JOIN AUTH_DB.UM.ORG_DIM o ON o.ID=e.ORGANIZATION",
+                     filt="o.NAME", chart="hbar", srcname="ENCOUNTERS join ORG_DIM (deduped)", keys="ORGANIZATION=ID"),
     "Provider": dict(expr="p.NAME", join="JOIN CLAIMS.PUBLIC.PROVIDERS p ON p.ID=e.PROVIDER",
                      filt="p.NAME", chart="hbar", srcname="ENCOUNTERS join PROVIDERS", keys="PROVIDER=ID"),
     "Clinical Reason": dict(expr="COALESCE(e.REASONDESCRIPTION,'Unspecified')", join="", chart="treemap",
