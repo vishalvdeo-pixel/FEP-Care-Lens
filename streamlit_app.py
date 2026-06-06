@@ -273,9 +273,25 @@ def md_panel(text):
     st.markdown(f"<div class='panel'>{html}</div>", unsafe_allow_html=True)
 
 
+def safe_chart(df):
+    nums = df.select_dtypes("number").columns.tolist()
+    cats = [c for c in df.columns if c not in nums]
+    if not nums:
+        return None
+    y = nums[0]
+    x = cats[0] if cats else df.columns[0]
+    try:
+        f = px.bar(df.head(25), x=x, y=y, color_discrete_sequence=SEQ, title="")
+        return finalize(f)
+    except Exception:
+        return None
+
+
 def auto_chart(df, spec):
     t = (spec.get("chart") or "").lower()
     x, y, color, title = spec.get("x"), spec.get("y"), spec.get("color"), spec.get("title", "")
+    if x not in df.columns or (t not in ("treemap", "donut") and y not in df.columns):
+        return safe_chart(df)
     color = color if color in df.columns else None
     try:
         if t == "bar":
@@ -291,10 +307,10 @@ def auto_chart(df, spec):
         elif t == "treemap":
             f = px.treemap(df, path=[x], values=y, title=title, color=y, color_continuous_scale="Blues")
         else:
-            return None
+            return safe_chart(df)
         return finalize(f)
     except Exception:
-        return None
+        return safe_chart(df)
 
 
 with st.sidebar:
@@ -379,7 +395,7 @@ with tab_ask:
             if fig is not None:
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.bar_chart(df.set_index(df.columns[0]))
+                st.dataframe(df, use_container_width=True, height=380)
         with R:
             md_panel(analysis)
         src(" join ".join(tbls), f"{len(df):,} rows from the Cortex-generated query")
