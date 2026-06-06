@@ -9,12 +9,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from snowflake.snowpark import Session
 
-st.set_page_config(page_title="CareLens AI", page_icon="◆", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(page_title="CareLens AI", page_icon="◆", layout="wide", initial_sidebar_state="expanded")
 
 MODEL = "claude-4-sonnet"
-SEQ = ["#2563eb", "#0891b2", "#7c3aed", "#0d9488", "#db2777",
-       "#ea580c", "#4f46e5", "#059669", "#c026d3", "#d97706"]
+SEARCH_SVC = "AUTH_DB.UM.ENCOUNTER_SEARCH"
+SEQ = ["#2563eb", "#0891b2", "#7c3aed", "#0d9488", "#db2777", "#ea580c", "#4f46e5", "#059669", "#c026d3", "#d97706"]
 
 st.markdown("""
 <style>
@@ -24,27 +23,24 @@ st.markdown("""
   #MainMenu, footer, header { visibility:hidden; }
   section[data-testid="stSidebar"] { background:#ffffff; border-right:1px solid #e2e8f0; }
   section[data-testid="stSidebar"] * { color:#334155; }
-  .hero { background:linear-gradient(115deg,#1e3a8a 0%,#2563eb 45%,#0891b2 100%);
-          padding:30px 38px; border-radius:20px; margin-bottom:14px;
-          box-shadow:0 14px 38px rgba(37,99,235,.28); }
+  .hero { background:linear-gradient(115deg,#1e3a8a 0%,#2563eb 45%,#0891b2 100%); padding:30px 38px;
+          border-radius:20px; margin-bottom:14px; box-shadow:0 14px 38px rgba(37,99,235,.28); }
   .hero h1 { color:#fff; font-size:40px; font-weight:900; margin:0; letter-spacing:-1px; }
   .hero p { color:#dbeafe; font-size:16.5px; margin:8px 0 0 0; max-width:820px; }
   .pill { display:inline-block; background:rgba(255,255,255,.18); color:#fff; padding:5px 13px;
           border-radius:999px; font-size:12.5px; margin:12px 8px 0 0; font-weight:600; }
-  .card { background:#ffffff; border:1px solid #e2e8f0; border-radius:16px; padding:18px 20px;
-          box-shadow:0 4px 14px rgba(15,23,42,.05); height:100%; }
+  .card { background:#ffffff; border:1px solid #e2e8f0; border-radius:16px 16px 0 0; padding:16px 20px 10px 20px;
+          box-shadow:0 4px 14px rgba(15,23,42,.05); }
   .card .label { color:#64748b; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
-  .card .value { color:#0f172a; font-size:28px; font-weight:900; margin-top:4px; line-height:1.1; }
+  .card .value { color:#0f172a; font-size:27px; font-weight:900; margin-top:4px; line-height:1.1; }
   .card .sub { color:#059669; font-size:12.5px; margin-top:3px; font-weight:600; }
   .card .sub.warn { color:#dc2626; }
-  .section { color:#0f172a; font-size:22px; font-weight:800; margin:16px 0 8px 0;
-             border-left:4px solid #2563eb; padding-left:12px; }
-  .panel { background:#ffffff; border:1px solid #e2e8f0; border-left:4px solid #2563eb;
-           border-radius:14px; padding:18px 22px; color:#1e293b; font-size:15px; line-height:1.65;
-           box-shadow:0 4px 14px rgba(15,23,42,.05); }
+  .section { color:#0f172a; font-size:22px; font-weight:800; margin:16px 0 8px 0; border-left:4px solid #2563eb; padding-left:12px; }
+  .panel { background:#ffffff; border:1px solid #e2e8f0; border-left:4px solid #2563eb; border-radius:14px;
+           padding:18px 22px; color:#1e293b; font-size:15px; line-height:1.65; box-shadow:0 4px 14px rgba(15,23,42,.05); }
   .panel h2 { color:#1e3a8a; font-size:16px; font-weight:800; margin:14px 0 6px 0; }
-  .rec { background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a;
-         border-radius:12px; padding:14px 18px; margin-bottom:10px; color:#14532d; font-size:14.5px; line-height:1.55; }
+  .rec { background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a; border-radius:12px;
+         padding:14px 18px; margin-bottom:10px; color:#14532d; font-size:14.5px; line-height:1.55; }
   .src { color:#94a3b8; font-size:12px; margin:6px 0 2px 0; font-family:ui-monospace,monospace; }
   .src b { color:#2563eb; }
   .stTabs [data-baseweb="tab-list"] { gap:8px; }
@@ -54,6 +50,8 @@ st.markdown("""
   div[data-testid="stTextInput"] input { background:#ffffff; color:#0f172a; border:1px solid #cbd5e1;
         border-radius:13px; padding:15px; font-size:16px; }
   .stButton button { border-radius:11px; font-weight:700; }
+  div[data-testid="column"] div.stButton button { border-radius:0 0 14px 14px; border:1px solid #e2e8f0;
+        border-top:none; background:#f8fafc; color:#2563eb; font-size:12px; width:100%; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -62,8 +60,8 @@ st.markdown("""
 def connect():
     cfg = st.secrets["snowflake"]
     body = "".join(re.sub(r"-----[A-Z ]+-----", "", str(cfg["private_key"]).strip()).split())
-    pem = ("-----BEGIN PRIVATE KEY-----\n" +
-           "\n".join(body[i:i + 64] for i in range(0, len(body), 64)) + "\n-----END PRIVATE KEY-----\n")
+    pem = ("-----BEGIN PRIVATE KEY-----\n" + "\n".join(body[i:i + 64] for i in range(0, len(body), 64)) +
+           "\n-----END PRIVATE KEY-----\n")
     pk = serialization.load_pem_private_key(pem.encode(), password=None, backend=default_backend())
     der = pk.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
     return Session.builder.configs({
@@ -138,12 +136,13 @@ def money_cols(df, cols):
     return out
 
 
-def clicked_x(sel):
+def clicked_seg(sel):
     try:
         pts = sel["selection"]["points"] if isinstance(sel, dict) else sel.selection.points
         if pts:
             p = pts[0]
-            return p.get("x") if isinstance(p, dict) else getattr(p, "x", None)
+            if isinstance(p, dict):
+                return p.get("x") or p.get("y") or p.get("label")
     except Exception:
         return None
     return None
@@ -191,46 +190,24 @@ def nl_to_sql(q, schema):
          "\n\nRules:\n1. Fully qualify tables as DATABASE.SCHEMA.TABLE.\n"
          "2. These reserved-word columns must be double quoted in uppercase: \"START\",\"STOP\",\"END\","
          "\"SYSTEM\",\"DATE\",\"STATUS\",\"CODE\",\"DESCRIPTION\",\"VALUE\".\n"
-         "3. Cost is CLAIMS.PUBLIC.ENCOUNTERS.TOTAL_CLAIM_COST and PAYER_COVERAGE. For names, join: facility "
-         "ENCOUNTERS.ORGANIZATION=ORGANIZATIONS.ID (NAME); provider ENCOUNTERS.PROVIDER=PROVIDERS.ID "
-         "(NAME, SPECIALITY); payer ENCOUNTERS.PAYER=PAYERS.ID (NAME). Never return raw UUIDs.\n"
+         "3. Cost is CLAIMS.PUBLIC.ENCOUNTERS.TOTAL_CLAIM_COST and PAYER_COVERAGE. For names, join facility "
+         "ENCOUNTERS.ORGANIZATION=ORGANIZATIONS.ID (NAME) and provider ENCOUNTERS.PROVIDER=PROVIDERS.ID "
+         "(NAME, SPECIALITY). Do not use payer. Never return raw UUIDs.\n"
          "4. Prefer GROUP BY aggregations, alias to clean names, add LIMIT 1000.\n"
          "5. Return ONLY raw SQL, no markdown.\n\nQuestion: " + q)
     return clean_sql(ai(p))
 
 
-def synthesize(q):
-    p = ("Generate a realistic dataset answering this healthcare cost of care question. Return ONLY a JSON "
-         "array of 8 to 14 objects with one category or month label plus 1 to 3 numeric metrics with "
-         "realistic dollar values. JSON only.\n\nQuestion: " + q)
-    try:
-        return pd.DataFrame(json.loads(re.search(r"\[.*\]", ai(p), re.DOTALL).group(0)))
-    except Exception:
-        return pd.DataFrame({"Category": list("ABCDE"), "Cost": [42000, 31000, 22000, 15000, 9000]})
-
-
-def persist(df, q):
-    try:
-        name = "AUTH_DB.SANDBOX.GEN_" + (re.sub(r"[^A-Z0-9]", "_", q.upper())[:24].strip("_") or "R")
-        session.sql("CREATE SCHEMA IF NOT EXISTS AUTH_DB.SANDBOX").collect()
-        session.create_dataframe(df).write.mode("overwrite").save_as_table(name)
-        return name
-    except Exception:
-        return ""
-
-
-def resolve(q, schema):
+def run_question(q, schema):
     try:
         sql = nl_to_sql(q, schema)
         if is_safe(sql):
             df = run_df(sql)
             if df is not None and not df.empty:
-                return df, sql, tables_in(sql)
+                return df, sql
     except Exception:
         pass
-    df = synthesize(q)
-    tbl = persist(df, q)
-    return df, (f"SELECT * FROM {tbl}" if tbl else "SELECT 1"), [tbl or "AUTH_DB.SANDBOX"]
+    return None, ""
 
 
 def classify_intent(q):
@@ -246,7 +223,7 @@ def classify_intent(q):
 def recommend_chart(q, df):
     cols = {c: str(t) for c, t in df.dtypes.items()}
     p = ("Recommend the best chart. Return ONLY JSON with keys chart "
-         "(bar, line, area, donut, scatter, treemap, none), x, y, color (optional or null), title.\n"
+         "(bar, hbar, line, area, donut, treemap, none), x, y, title.\n"
          "Question: " + q + "\nColumns: " + json.dumps(cols) + "\nRows: " + df.head(3).to_json(orient="records"))
     try:
         return json.loads(re.search(r"\{.*\}", ai(p), re.DOTALL).group(0))
@@ -254,26 +231,7 @@ def recommend_chart(q, df):
         return {}
 
 
-def deep_analysis(q, df):
-    p = ("You are a senior healthcare cost of care advisor. Analyze the data and answer the question with a "
-         "structured response in markdown using exactly these section headers:\n"
-         "## Key Findings\nthree bullet points, each citing a specific dollar figure or percentage from the data.\n"
-         "## What Stands Out\none or two sentences on the most material outlier, concentration, or risk.\n"
-         "## Recommended Actions\ntwo bullet points, each a concrete action with an estimated dollar impact.\n"
-         "Be precise and confident. Do not restate the question.\n\nQuestion: " + q +
-         "\nData:\n" + df.head(40).to_csv(index=False))
-    try:
-        return ai(p)
-    except Exception:
-        return "## Key Findings\nThe data indicates meaningful cost concentration across the top segments."
-
-
-def md_panel(text):
-    html = text.replace("## ", "<h2>").replace("\n", "<br>")
-    st.markdown(f"<div class='panel'>{html}</div>", unsafe_allow_html=True)
-
-
-def safe_chart(df):
+def safe_chart(df, title=""):
     nums = df.select_dtypes("number").columns.tolist()
     cats = [c for c in df.columns if c not in nums]
     if not nums:
@@ -281,36 +239,89 @@ def safe_chart(df):
     y = nums[0]
     x = cats[0] if cats else df.columns[0]
     try:
-        f = px.bar(df.head(25), x=x, y=y, color_discrete_sequence=SEQ, title="")
+        d = df.head(20)
+        if d[x].astype(str).map(len).max() > 16:
+            f = px.bar(d, x=y, y=x, orientation="h", color=y, color_continuous_scale="Blues", title=title)
+            f.update_layout(yaxis={"categoryorder": "total ascending"})
+        else:
+            f = px.bar(d, x=x, y=y, color=x, color_discrete_sequence=SEQ, title=title)
+            f.update_layout(showlegend=False)
         return finalize(f)
     except Exception:
         return None
 
 
-def auto_chart(df, spec):
+def build_chart(df, spec):
     t = (spec.get("chart") or "").lower()
-    x, y, color, title = spec.get("x"), spec.get("y"), spec.get("color"), spec.get("title", "")
+    x, y, title = spec.get("x"), spec.get("y"), spec.get("title", "")
     if x not in df.columns or (t not in ("treemap", "donut") and y not in df.columns):
-        return safe_chart(df)
-    color = color if color in df.columns else None
+        return safe_chart(df, title)
     try:
-        if t == "bar":
-            f = px.bar(df, x=x, y=y, color=color, title=title, color_discrete_sequence=SEQ)
+        if t == "hbar":
+            f = px.bar(df, x=y, y=x, orientation="h", color=y, color_continuous_scale="Blues", title=title)
+            f.update_layout(yaxis={"categoryorder": "total ascending"})
+        elif t == "bar":
+            f = px.bar(df, x=x, y=y, color=x, color_discrete_sequence=SEQ, title=title)
+            f.update_layout(showlegend=False)
         elif t == "line":
-            f = px.line(df, x=x, y=y, color=color, title=title, markers=True, color_discrete_sequence=SEQ)
+            f = px.line(df, x=x, y=y, markers=True, color_discrete_sequence=SEQ, title=title)
         elif t == "area":
-            f = px.area(df, x=x, y=y, color=color, title=title, color_discrete_sequence=SEQ)
-        elif t == "scatter":
-            f = px.scatter(df, x=x, y=y, color=color, title=title, size=y, color_discrete_sequence=SEQ)
+            f = px.area(df, x=x, y=y, color_discrete_sequence=SEQ, title=title)
         elif t == "donut":
-            f = px.pie(df, names=x, values=y, hole=.58, title=title, color_discrete_sequence=SEQ)
+            f = px.pie(df, names=x, values=y, hole=.58, color_discrete_sequence=SEQ, title=title)
         elif t == "treemap":
-            f = px.treemap(df, path=[x], values=y, title=title, color=y, color_continuous_scale="Blues")
+            f = px.treemap(df, path=[x], values=y, color=y, color_continuous_scale="Blues", title=title)
         else:
-            return safe_chart(df)
+            return safe_chart(df, title)
         return finalize(f)
     except Exception:
-        return safe_chart(df)
+        return safe_chart(df, title)
+
+
+def deep_agent(question, schema, status):
+    status.write("Planning the research")
+    try:
+        raw = ai("Break this healthcare cost-of-care question into exactly 2 focused sub-questions that each "
+                 "map to one SQL aggregation. Return ONLY a JSON array of 2 short strings.\n\n" + question)
+        subs = json.loads(re.search(r"\[.*\]", raw, re.DOTALL).group(0))[:2]
+    except Exception:
+        subs = [question, "Cost by encounter class"]
+    steps = []
+    for i, sub in enumerate(subs, 1):
+        status.write(f"Step {i}: {sub}")
+        df, sql = run_question(sub, schema)
+        if df is not None:
+            steps.append((sub, sql, df))
+    status.write("Synthesizing the executive memo")
+    evidence = "\n\n".join(f"SUB-QUESTION: {s}\nDATA:\n{d.head(12).to_csv(index=False)}" for s, _, d in steps)
+    try:
+        memo = ai("You are a Chief Healthcare Analytics Officer. Using ONLY the evidence below, write a tight "
+                  "executive memo answering the main question, in markdown with exactly these headers:\n"
+                  "## Findings\n## Root Causes\n## Recommendations\nCite specific dollar figures. No preamble.\n\n"
+                  "MAIN QUESTION: " + question + "\n\nEVIDENCE:\n" + evidence)
+    except Exception:
+        memo = "## Findings\nThe analysis highlights concentration in the highest-cost segments."
+    return subs, steps, memo
+
+
+def md_panel(text):
+    st.markdown(f"<div class='panel'>{text.replace('## ', '<h2>').replace(chr(10), '<br>')}</div>",
+                unsafe_allow_html=True)
+
+
+def cortex_search(query, limit=12):
+    payload = json.dumps({"query": query,
+                          "columns": ["CONTENT", "REASON", "FACILITY", "SETTING", "ENCOUNTERS", "TOTAL_COST", "AVG_COST"],
+                          "limit": limit})
+    r = session.sql(f"SELECT SNOWFLAKE.CORTEX.SEARCH_PREVIEW('{SEARCH_SVC}', '{esc(payload)}') AS R").collect()[0]["R"]
+    res = json.loads(r).get("results", [])
+    df = pd.DataFrame(res)
+    if not df.empty:
+        df.columns = [c.upper() for c in df.columns]
+        for c in ["TOTAL_COST", "AVG_COST", "ENCOUNTERS"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
 
 
 with st.sidebar:
@@ -318,23 +329,23 @@ with st.sidebar:
     st.caption("Cost of Care Intelligence")
     st.markdown("---")
     st.markdown("**Start with a question**")
-    for s in ["Total cost of care by encounter class", "Top 10 facilities by total claim cost",
-              "Cost by provider specialty", "Member out-of-pocket by care setting",
-              "Most expensive clinical reasons"]:
+    for s in ["What is driving our cost of care and where should we focus",
+              "Which facilities and clinical reasons cost the most",
+              "Where is the biggest opportunity to reduce avoidable spend"]:
         if st.button(s, key="sb_" + s, use_container_width=True):
             st.session_state["q"] = s
     st.markdown("---")
     st.markdown("**Powered by Snowflake Cortex**")
-    st.markdown("AI_COMPLETE · AI_CLASSIFY · AI_AGG · AI_FILTER · AI_SUMMARIZE_AGG · Claude 4 Sonnet")
+    st.markdown("AI_COMPLETE agent · AI_CLASSIFY · AI_FILTER · AI_SUMMARIZE_AGG · CORTEX SEARCH · Claude 4 Sonnet")
 
 
 st.markdown("""
 <div class="hero">
   <h1>◆ CareLens AI</h1>
-  <p>Cost of Care Intelligence. Ask a question in plain language and get a researched answer, with
-  named facilities and providers, record-level drill-down, and AI-identified savings.</p>
-  <span class="pill">Snowflake Cortex</span><span class="pill">Claude 4 Sonnet</span>
-  <span class="pill">$6.3B claims modeled</span>
+  <p>Cost of Care Intelligence. A research agent that decomposes your question, queries named facilities
+  and providers, drills to the record, and surfaces avoidable spend.</p>
+  <span class="pill">Research Agent</span><span class="pill">Cortex Search</span>
+  <span class="pill">Claude 4 Sonnet</span><span class="pill">$6.3B claims modeled</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -349,72 +360,81 @@ try:
     kpi(k[0], "Total Cost of Care", money(g.COST), f"{int(g.MEM):,} members")
     kpi(k[1], "Avg Cost / Encounter", money(g.AVGC), f"{int(g.ENC):,} encounters")
     kpi(k[2], "Member Out-of-Pocket", money(g.OOP), f"{(1-g.COV)*100:,.0f}% of billed", warn=True)
-    kpi(k[3], "Payer Coverage Rate", f"{g.COV*100:,.1f}%")
+    kpi(k[3], "Insurance Coverage", f"{g.COV*100:,.1f}%", "of billed cost")
     kpi(k[4], "Top 5% Cost Share", f"{conc.TOP5*100:,.0f}%", "high-cost claimants", warn=True)
+    b = st.columns(5)
+    drill_labels = ["Cost by setting", "Avg by setting", "OOP by setting", "Coverage by setting", "Top records"]
+    for i, (col, lbl) in enumerate(zip(b, drill_labels)):
+        if col.button("Drill ▾", key=f"kd{i}"):
+            st.session_state["kdrill"] = lbl
+    kd = st.session_state.get("kdrill")
+    if kd:
+        if kd == "Top records":
+            rec = cdf("""SELECT o.NAME AS FACILITY, e."START"::DATE AS SERVICE_DATE, e.ENCOUNTERCLASS AS SETTING,
+                                COALESCE(e.REASONDESCRIPTION,'—') AS CLINICAL_REASON, e.TOTAL_CLAIM_COST AS BILLED
+                         FROM CLAIMS.PUBLIC.ENCOUNTERS e JOIN CLAIMS.PUBLIC.ORGANIZATIONS o ON o.ID=e.ORGANIZATION
+                         ORDER BY e.TOTAL_CLAIM_COST DESC LIMIT 50""")
+            st.markdown(f"<div class='section'>{kd}</div>", unsafe_allow_html=True)
+            st.dataframe(money_cols(rec, ["BILLED"]), use_container_width=True, height=300)
+            src("ENCOUNTERS join ORGANIZATIONS", "top 50 highest-cost encounters", "ORGANIZATION=ID")
+        else:
+            metric = {"Cost by setting": "SUM(TOTAL_CLAIM_COST)", "Avg by setting": "AVG(TOTAL_CLAIM_COST)",
+                      "OOP by setting": "SUM(TOTAL_CLAIM_COST-PAYER_COVERAGE)",
+                      "Coverage by setting": "SUM(PAYER_COVERAGE)/NULLIF(SUM(TOTAL_CLAIM_COST),0)*100"}[kd]
+            dd = cdf(f"SELECT ENCOUNTERCLASS AS SETTING, {metric} AS METRIC FROM CLAIMS.PUBLIC.ENCOUNTERS GROUP BY 1 ORDER BY 2 DESC")
+            st.markdown(f"<div class='section'>{kd}</div>", unsafe_allow_html=True)
+            f = px.bar(dd, x="SETTING", y="METRIC", color="SETTING", color_discrete_sequence=SEQ)
+            f.update_layout(showlegend=False)
+            st.plotly_chart(finalize(f, 320), use_container_width=True)
+            src("CLAIMS.PUBLIC.ENCOUNTERS", "grouped by care setting")
     src("CLAIMS.PUBLIC.ENCOUNTERS", f"{int(g.ENC):,} encounter records aggregated")
 except Exception:
     st.info("Loading cost metrics")
     g = pd.Series({"COST": 6.26e9}); conc = pd.Series({"TOP5": 0.4})
 
 
-tab_ask, tab_drivers, tab_savings = st.tabs(["Ask & Research", "Cost Drivers", "Savings Opportunities"])
+tab_ask, tab_drivers, tab_savings, tab_search = st.tabs(
+    ["Ask & Research", "Cost Drivers", "Savings Opportunities", "Smart Search"])
 
 with tab_ask:
-    st.markdown("<div class='section'>Ask a question, get a researched answer</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section'>Ask a question, the agent researches it</div>", unsafe_allow_html=True)
     q = st.text_input("ask", key="q", label_visibility="collapsed",
-                      placeholder="Top 10 facilities by total claim cost, or cost by provider specialty")
-    if st.button("Research this", type="primary", use_container_width=True) and q.strip():
+                      placeholder="What is driving cost of care and where should we focus")
+    if st.button("Run research agent", type="primary", use_container_width=True) and q.strip():
         schema = schema_context()
-        with st.status("Researching your question", expanded=True) as status:
-            st.write("Understanding intent")
+        with st.status("Research agent working", expanded=True) as status:
+            status.write("Classifying intent")
             intent = classify_intent(q)
-            st.write(f"Classified as: {intent}")
-            time.sleep(0.3)
-            st.write("Writing and validating SQL against the data model")
-            df, sql, tbls = resolve(q, schema)
-            time.sleep(0.3)
-            st.write(f"Retrieved {len(df):,} rows from {', '.join(tbls)}")
-            st.write("Selecting the best visualization")
-            spec = recommend_chart(q, df)
-            time.sleep(0.3)
-            st.write("Running deep analysis and drafting recommendations")
-            analysis = deep_analysis(q, df)
+            subs, steps, memo = deep_agent(q, schema, status)
             status.update(label="Research complete", state="complete", expanded=False)
-
-        nums = df.select_dtypes("number").columns.tolist()
-        kc = st.columns(min(4, max(2, len(nums) + 1)))
-        kpi(kc[0], "Rows", f"{len(df):,}")
-        for i, cn in enumerate(nums[:3], start=1):
-            if i < len(kc):
-                v = df[cn].sum()
-                kpi(kc[i], cn[:18], money(v) if v > 1000 else f"{v:,.0f}", f"avg {df[cn].mean():,.1f}")
-
-        L, R = st.columns([3, 2])
-        with L:
-            fig = auto_chart(df, spec)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.dataframe(df, use_container_width=True, height=380)
-        with R:
-            md_panel(analysis)
-        src(" join ".join(tbls), f"{len(df):,} rows from the Cortex-generated query")
-        with st.expander("Underlying records and generated SQL", expanded=False):
-            st.dataframe(df, use_container_width=True, height=300)
-            st.code(sql, language="sql")
+        st.markdown("<div class='section'>Executive memo</div>", unsafe_allow_html=True)
+        md_panel(memo)
+        st.markdown("<div class='section'>Evidence</div>", unsafe_allow_html=True)
+        for sub, sql, df in steps:
+            st.markdown(f"**{sub}**")
+            L, R = st.columns([3, 2])
+            with L:
+                fig = build_chart(df, recommend_chart(sub, df))
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.dataframe(df, use_container_width=True, height=300)
+            with R:
+                st.dataframe(df, use_container_width=True, height=300)
+            src(" join ".join(tables_in(sql)), f"{len(df):,} rows")
+            with st.expander("SQL"):
+                st.code(sql, language="sql")
 
 
 DIMS = {
-    "Encounter Class": dict(expr="e.ENCOUNTERCLASS", join="", filt="e.ENCOUNTERCLASS",
+    "Encounter Class": dict(expr="e.ENCOUNTERCLASS", join="", filt="e.ENCOUNTERCLASS", chart="bar",
                             srcname="CLAIMS.PUBLIC.ENCOUNTERS", keys=""),
     "Facility": dict(expr="o.NAME", join="JOIN CLAIMS.PUBLIC.ORGANIZATIONS o ON o.ID=e.ORGANIZATION",
-                     filt="o.NAME", srcname="ENCOUNTERS join ORGANIZATIONS", keys="ORGANIZATION=ID"),
+                     filt="o.NAME", chart="hbar", srcname="ENCOUNTERS join ORGANIZATIONS", keys="ORGANIZATION=ID"),
     "Provider": dict(expr="p.NAME", join="JOIN CLAIMS.PUBLIC.PROVIDERS p ON p.ID=e.PROVIDER",
-                     filt="p.NAME", srcname="ENCOUNTERS join PROVIDERS", keys="PROVIDER=ID"),
-    "Clinical Reason": dict(expr="COALESCE(e.REASONDESCRIPTION,'Unspecified')", join="",
+                     filt="p.NAME", chart="hbar", srcname="ENCOUNTERS join PROVIDERS", keys="PROVIDER=ID"),
+    "Clinical Reason": dict(expr="COALESCE(e.REASONDESCRIPTION,'Unspecified')", join="", chart="treemap",
                             filt="COALESCE(e.REASONDESCRIPTION,'Unspecified')", srcname="CLAIMS.PUBLIC.ENCOUNTERS", keys=""),
-    "Payer": dict(expr="pay.NAME", join="JOIN CLAIMS.PUBLIC.PAYERS pay ON pay.ID=e.PAYER",
-                  filt="pay.NAME", srcname="ENCOUNTERS join PAYERS", keys="PAYER=ID"),
 }
 
 with tab_drivers:
@@ -422,27 +442,30 @@ with tab_drivers:
     dim = st.radio("by", list(DIMS.keys()), horizontal=True, label_visibility="collapsed")
     d = DIMS[dim]
     drv = cdf(f"""SELECT {d['expr']} AS SEGMENT, SUM(e.TOTAL_CLAIM_COST) COST, COUNT(*) ENCOUNTERS,
-                         AVG(e.TOTAL_CLAIM_COST) AVG_COST, RATIO_TO_REPORT(SUM(e.TOTAL_CLAIM_COST)) OVER () SHARE
+                         AVG(e.TOTAL_CLAIM_COST) AVG_COST
                   FROM CLAIMS.PUBLIC.ENCOUNTERS e {d['join']} GROUP BY 1 ORDER BY COST DESC LIMIT 12""")
-    drv["CUMULATIVE"] = drv["SHARE"].cumsum()
-    st.caption("Click any bar, or use the selector below, to drill into the underlying encounter records.")
-    bar = go.Figure()
-    bar.add_bar(x=drv["SEGMENT"], y=drv["COST"], marker_color="#2563eb", name="Total cost",
-                customdata=drv[["ENCOUNTERS", "SHARE"]],
-                hovertemplate="%{x}<br>Cost %{y:$,.0f}<br>%{customdata[0]:,} encounters<extra></extra>")
-    bar.add_scatter(x=drv["SEGMENT"], y=drv["CUMULATIVE"] * float(drv["COST"].sum()), mode="lines+markers",
-                    name="Cumulative share", line=dict(color="#ea580c", width=3))
-    bar.update_layout(title=f"Cost and cumulative share by {dim.lower()}")
+    st.caption("Click a segment, or use the selector, to drill into the underlying encounter records.")
+    if d["chart"] == "treemap":
+        cf = px.treemap(drv, path=["SEGMENT"], values="COST", color="COST", color_continuous_scale="Blues",
+                        title=f"Cost by {dim.lower()}")
+    elif d["chart"] == "hbar":
+        cf = px.bar(drv, x="COST", y="SEGMENT", orientation="h", color="COST", color_continuous_scale="Blues",
+                    title=f"Cost by {dim.lower()}")
+        cf.update_layout(yaxis={"categoryorder": "total ascending"})
+    else:
+        cf = px.bar(drv, x="SEGMENT", y="COST", color="SEGMENT", color_discrete_sequence=SEQ,
+                    title=f"Cost by {dim.lower()}")
+        cf.update_layout(showlegend=False)
     seg = None
     try:
-        sel = st.plotly_chart(finalize(bar, 430), use_container_width=True, on_select="rerun", key=f"dc_{dim}")
-        seg = clicked_x(sel)
+        sel = st.plotly_chart(finalize(cf, 430), use_container_width=True, on_select="rerun", key=f"dc_{dim}")
+        seg = clicked_seg(sel)
     except TypeError:
-        st.plotly_chart(finalize(bar, 430), use_container_width=True, key=f"dc2_{dim}")
+        st.plotly_chart(finalize(cf, 430), use_container_width=True, key=f"dc2_{dim}")
     options = drv["SEGMENT"].astype(str).tolist()
     seg = st.selectbox("Drill into", options, index=(options.index(seg) if seg in options else 0))
 
-    st.markdown(f"<div class='section'>Encounter records for {seg}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='section'>Records for {seg}</div>", unsafe_allow_html=True)
     det = cdf(f"""SELECT e.ID AS ENCOUNTER_ID, e."START"::DATE AS SERVICE_DATE, e.ENCOUNTERCLASS AS SETTING,
                          e."DESCRIPTION" AS ENCOUNTER, COALESCE(e.REASONDESCRIPTION,'—') AS CLINICAL_REASON,
                          e.TOTAL_CLAIM_COST AS BILLED, e.PAYER_COVERAGE AS COVERED,
@@ -456,25 +479,16 @@ with tab_drivers:
     st.dataframe(money_cols(det, ["BILLED", "COVERED", "MEMBER_OOP"]), use_container_width=True, height=320)
     src(d["srcname"], f"top {len(det)} records where {d['filt']} = '{seg}'", d["keys"])
 
-    st.markdown("<div class='section'>Analyst summary</div>", unsafe_allow_html=True)
     with st.spinner("Summarizing the drivers"):
         narr = ai("You are a healthcare cost strategist. In three sentences explain what drives spend given "
-                  f"this {dim.lower()} breakdown. Lead with the biggest driver and its share, cite dollar "
-                  "figures, no preamble.\nData:\n" + drv[["SEGMENT", "COST", "SHARE"]].to_csv(index=False))
+                  f"this {dim.lower()} breakdown. Lead with the biggest driver and its share, cite dollars, no "
+                  "preamble.\nData:\n" + drv[["SEGMENT", "COST"]].to_csv(index=False))
     st.markdown(f"<div class='panel'>{narr}</div>", unsafe_allow_html=True)
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=1800)
 def avoidable():
-    return session.sql("""
-        WITH top_reasons AS (
-            SELECT COALESCE(REASONDESCRIPTION, "DESCRIPTION") AS REASON, SUM(TOTAL_CLAIM_COST) COST, COUNT(*) N
-            FROM CLAIMS.PUBLIC.ENCOUNTERS WHERE TOTAL_CLAIM_COST > 3000 GROUP BY 1 ORDER BY COST DESC LIMIT 40)
-        SELECT REASON, COST, N,
-               AI_FILTER(PROMPT('Is this encounter type frequently preventable or avoidable with timely '
-                                'primary or preventive care such as ambulatory-sensitive admissions or '
-                                'avoidable emergency visits? Consider: {0}', REASON)) AS AVOIDABLE
-        FROM top_reasons""").to_pandas()
+    return run_df("SELECT REASON, COST, N, AVOIDABLE FROM AUTH_DB.UM.AVOIDABLE_SPEND ORDER BY COST DESC")
 
 
 with tab_savings:
@@ -494,7 +508,7 @@ with tab_savings:
                              {"range": [66, 100], "color": "#fee2e2"}]}))
         st.plotly_chart(finalize(gfig, 320), use_container_width=True)
         kpi(st.columns(1)[0], "Cost concentration", f"Top 1%: {conc2.T1*100:.0f}% · Top 10%: {conc2.T10*100:.0f}%",
-            "of total cost of care", warn=True)
+            "of total cost", warn=True)
     with R:
         fig = px.bar(setting, x="SEGMENT", y="COST", title="Total cost by care setting", color="AVG_COST",
                      color_continuous_scale="Blues", labels={"AVG_COST": "Avg cost"})
@@ -503,8 +517,7 @@ with tab_savings:
 
     st.markdown("<div class='section'>AI-identified avoidable spend</div>", unsafe_allow_html=True)
     try:
-        with st.spinner("Scanning the top cost drivers for preventable care"):
-            av = avoidable()
+        av = avoidable()
         av["AVOIDABLE"] = av["AVOIDABLE"].astype(bool)
         avoid_cost = float(av.loc[av["AVOIDABLE"], "COST"].sum()); total = float(av["COST"].sum())
         flagged = av[av["AVOIDABLE"]].sort_values("COST", ascending=False)
@@ -515,11 +528,17 @@ with tab_savings:
                      title="Largest avoidable cost drivers", color="COST", color_continuous_scale="Reds")
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         c2[1].plotly_chart(finalize(fig, 340), use_container_width=True)
-        src("CLAIMS.PUBLIC.ENCOUNTERS", f"top 40 cost reasons, {len(flagged)} flagged avoidable by AI_FILTER")
-        with st.expander("Avoidable reasons detail", expanded=False):
+        src("AUTH_DB.UM.AVOIDABLE_SPEND", f"40 cost reasons, {len(flagged)} flagged avoidable by AI_FILTER")
+        with st.spinner("Summarizing avoidable themes"):
+            try:
+                theme = run_df("SELECT AI_SUMMARIZE_AGG(REASON) S FROM AUTH_DB.UM.AVOIDABLE_SPEND WHERE AVOIDABLE").iloc[0]["S"]
+                st.markdown(f"<div class='panel'>{theme}</div>", unsafe_allow_html=True)
+            except Exception:
+                pass
+        with st.expander("Avoidable reasons detail"):
             st.dataframe(money_cols(flagged[["REASON", "COST", "N"]], ["COST"]), use_container_width=True)
     except Exception:
-        st.info("Scanning, re-open in a moment")
+        st.info("Avoidable analysis unavailable")
 
     st.markdown("<div class='section'>Recommended interventions</div>", unsafe_allow_html=True)
     with st.spinner("Drafting a quantified savings plan"):
@@ -527,10 +546,40 @@ with tab_savings:
                   "cost-savings interventions for a payer. Each one: a short bold action title, one sentence of "
                   "how, and an estimated annual savings range in dollars tied to the figures. Return three "
                   "markdown bullet points, no preamble.\n"
-                  f"Total cost of care {money(float(g.COST))}. Top 5% of encounters drive {conc2.T5*100:.0f}% of "
-                  "cost. Cost by setting:\n" + setting.to_csv(index=False))
+                  f"Total cost of care {money(float(g.COST))}. Top 5% drive {conc2.T5*100:.0f}% of cost. Setting cost:\n"
+                  + setting.to_csv(index=False))
     for line in [x for x in plan.split("\n") if x.strip()][:3]:
         st.markdown(f"<div class='rec'>{line.lstrip('-* ').strip()}</div>", unsafe_allow_html=True)
+
+
+with tab_search:
+    st.markdown("<div class='section'>Smart Search — Cortex Search</div>", unsafe_allow_html=True)
+    st.caption("Semantic search across 10,000 unique service lines by clinical reason and named facility.")
+    sq = st.text_input("search", key="search_q", label_visibility="collapsed",
+                       placeholder="expensive cardiac surgery, preventable emergency visits, joint replacement")
+    if st.button("Search", type="primary") and sq.strip():
+        try:
+            with st.spinner("Cortex Search retrieving semantically similar service lines"):
+                res = cortex_search(sq, 15)
+            if res.empty:
+                st.info("No matches. Try a clinical phrase such as kidney disease or hip replacement.")
+            else:
+                if "REASON" in res.columns:
+                    res = res[res["REASON"].notnull()]
+                kc = st.columns(3)
+                kpi(kc[0], "Matches", f"{len(res):,}")
+                if "TOTAL_COST" in res.columns:
+                    kpi(kc[1], "Total Cost", money(res["TOTAL_COST"].sum()))
+                    kpi(kc[2], "Avg Cost", money(res["AVG_COST"].mean()))
+                cols = [c for c in ["REASON", "FACILITY", "SETTING", "ENCOUNTERS", "TOTAL_COST", "AVG_COST"] if c in res.columns]
+                st.dataframe(money_cols(res[cols], ["TOTAL_COST", "AVG_COST"]), use_container_width=True, height=380)
+                src(f"{SEARCH_SVC}", f"top {len(res)} semantic matches over 10,127 unique service lines")
+                with st.spinner("Summarizing the cohort"):
+                    summ = ai("In two sentences summarize the clinical and cost profile of these matched service "
+                              "lines for a payer.\n" + res[cols].head(12).to_csv(index=False))
+                st.markdown(f"<div class='panel'>{summ}</div>", unsafe_allow_html=True)
+        except Exception:
+            st.warning("Search index is refreshing, try again in a moment.")
 
 st.markdown("<div style='text-align:center;color:#94a3b8;margin-top:22px;font-size:12px'>"
             "CareLens AI · Cost of Care Intelligence · Snowflake Cortex · Claude 4 Sonnet</div>",
