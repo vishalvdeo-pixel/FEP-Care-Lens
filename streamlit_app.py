@@ -371,6 +371,58 @@ def cortex_search(query, limit=12):
     return df
 
 
+FEP_PERSONA = ("You are a senior Federal Employees Health Benefits (FEHB) and Postal Service Health Benefits "
+               "(PSHB) cost-of-care strategist advising a health plan carrier that contracts with the U.S. Office "
+               "of Personnel Management (OPM). You understand FEHB and PSHB benefit and rate proposal processes, "
+               "premium and cost-sharing structures, Medicare and EGWP coordination, and federal cost-of-care "
+               "economics. ")
+LETTER_SEARCH = "CALL_LETTERS.ANALYTICS.LETTER_SEARCH"
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def letters_intel():
+    return run_df("""SELECT FILE_NAME, YEAR, COALESCE(NULLIF(SUBJECT,''),'(no subject)') SUBJECT, CATEGORY, PROGRAMS
+                     FROM CALL_LETTERS.ANALYTICS.LETTER_INTEL WHERE YEAR IS NOT NULL
+                     ORDER BY YEAR DESC, FILE_NAME""")
+
+
+def letter_text(file_name):
+    df = run_df(f"SELECT FULL_TEXT FROM CALL_LETTERS.ANALYTICS.LETTER_INTEL WHERE FILE_NAME='{esc(file_name)}'")
+    return df.iloc[0]["FULL_TEXT"] if not df.empty else ""
+
+
+def search_letters(query, limit=4):
+    payload = json.dumps({"query": query, "columns": ["SUBJECT", "YEAR", "CATEGORY", "FILE_NAME"], "limit": limit})
+    try:
+        r = session.sql(f"SELECT SNOWFLAKE.CORTEX.SEARCH_PREVIEW('{LETTER_SEARCH}', '{esc(payload)}') AS R").collect()[0]["R"]
+        return json.loads(r).get("results", [])
+    except Exception:
+        return []
+
+
+def claims_cost_context(year):
+    try:
+        yc = (f'TO_TIMESTAMP_NTZ("START") >= \'{year}-01-01\' '
+              f'AND TO_TIMESTAMP_NTZ("START") < \'{year + 1}-01-01\'')
+        df = run_df(f"""SELECT ENCOUNTERCLASS SETTING, ROUND(SUM(TOTAL_CLAIM_COST)) COST
+                        FROM CLAIMS.PUBLIC.ENCOUNTERS WHERE {yc} GROUP BY 1 ORDER BY COST DESC LIMIT 6""")
+        return df.to_csv(index=False)
+    except Exception:
+        return "(claims cost mix unavailable)"
+
+
+def fep_impact(text, rag_ctx, claims_ctx):
+    prompt = (FEP_PERSONA +
+              "Produce a COST OF CARE IMPACT ASSESSMENT in markdown using EXACTLY these headers:\n"
+              "## Key Directives\n## Cost-of-Care Impact\n## Affected Benefits and Members\n## Recommended Carrier Actions\n"
+              "Ground your analysis in the related historical OPM guidance and the carrier's actual claims cost mix "
+              "below. State cost direction (increase or decrease) and cite figures where useful. No preamble.\n\n"
+              "=== THIS CALL LETTER ===\n" + text[:9000] +
+              "\n\n=== RELATED HISTORICAL OPM GUIDANCE (retrieved by Cortex Search) ===\n" + rag_ctx +
+              "\n\n=== CARRIER CLAIMS COST MIX ===\n" + claims_ctx)
+    return ai(prompt)
+
+
 def yclause(col='"START"'):
     y = int(st.session_state.get("year", 2024))
     return f"TO_TIMESTAMP_NTZ({col}) >= '{y}-01-01' AND TO_TIMESTAMP_NTZ({col}) < '{y + 1}-01-01'"
