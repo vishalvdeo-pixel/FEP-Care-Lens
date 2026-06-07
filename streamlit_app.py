@@ -443,7 +443,7 @@ with st.sidebar:
             st.session_state["q"] = s
     st.markdown("---")
     st.markdown("**Powered by Snowflake Cortex**")
-    st.markdown("AI_COMPLETE agent · AI_CLASSIFY · CORTEX SEARCH · Claude 4 Sonnet")
+    st.markdown("AI_COMPLETE · AI_CLASSIFY · AI_PARSE_DOCUMENT · CORTEX SEARCH (RAG) · Claude 4 Sonnet")
 
 
 st.markdown("""
@@ -452,7 +452,7 @@ st.markdown("""
   <p>Cost of Care Intelligence. A research agent that decomposes your question, queries named facilities
   and providers, drills to the record, and surfaces avoidable spend.</p>
   <span class="pill">Research Agent</span><span class="pill">Cortex Search</span>
-  <span class="pill">Claude 4 Sonnet</span><span class="pill">Annual cost of care</span>
+  <span class="pill">Claude 4 Sonnet</span><span class="pill">568 FEP call letters (RAG)</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -505,8 +505,8 @@ except Exception:
     g = pd.Series({"COST": 6.26e9}); conc = pd.Series({"TOP5": 0.4})
 
 
-tab_ask, tab_drivers, tab_savings, tab_search = st.tabs(
-    ["Ask & Research", "Cost Drivers", "Savings Opportunities", "Smart Search"])
+tab_ask, tab_drivers, tab_savings, tab_search, tab_letter = st.tabs(
+    ["Ask & Research", "Cost Drivers", "Savings Opportunities", "Smart Search", "Call Letter Impact"])
 
 with tab_ask:
     st.markdown("<div class='section'>Ask a question, the agent researches it</div>", unsafe_allow_html=True)
@@ -709,6 +709,61 @@ with tab_search:
                 st.markdown(f"<div class='panel'>{summ}</div>", unsafe_allow_html=True)
         except Exception:
             st.warning("Search index is refreshing, try again in a moment.")
+
+with tab_letter:
+    st.markdown("<div class='section'>FEP Call Letter — Cost of Care Impact</div>", unsafe_allow_html=True)
+    st.caption("Analyze an OPM FEHB/PSHB carrier letter and see its cost-of-care impact, grounded in 568 historical "
+               "letters (Cortex Search RAG) and your claims cost mix.")
+    mode = st.radio("src", ["Browse the 568 OPM letters", "Upload a call letter PDF"],
+                    horizontal=True, label_visibility="collapsed")
+    text, label = "", ""
+    if mode.startswith("Browse"):
+        li = letters_intel()
+        yrs = sorted([int(y) for y in li["YEAR"].dropna().unique()], reverse=True)
+        cc = st.columns(2)
+        yfil = cc[0].selectbox("Year", yrs)
+        sub = li[li["YEAR"] == yfil].reset_index(drop=True)
+        opts = (sub["FILE_NAME"] + "  —  " + sub["SUBJECT"].str[:64]).tolist()
+        pick = cc[1].selectbox("Letter", opts) if opts else None
+        if pick:
+            st.caption(f"Category: {sub.loc[opts.index(pick), 'CATEGORY']}  ·  Programs: {sub.loc[opts.index(pick), 'PROGRAMS']}")
+            if st.button("Analyze cost-of-care impact", type="primary", use_container_width=True):
+                label = pick.split("  —  ")[0]
+                text = letter_text(label)
+    else:
+        up = st.file_uploader("Upload an OPM FEHB/PSHB call letter PDF", type=["pdf"])
+        if up is not None and st.button("Analyze uploaded letter", type="primary", use_container_width=True):
+            try:
+                session.file.put_stream(up, f"@CALL_LETTERS.RAW.UPLOADS/{up.name}",
+                                        auto_compress=False, overwrite=True)
+                with st.spinner("Cortex is reading the PDF (AI_PARSE_DOCUMENT)…"):
+                    text = run_df("SELECT TO_VARCHAR(AI_PARSE_DOCUMENT(TO_FILE('@CALL_LETTERS.RAW.UPLOADS',"
+                                  f"'{esc(up.name)}'),{{'mode':'LAYOUT'}}):content) AS T").iloc[0]["T"]
+                    label = up.name
+            except Exception:
+                st.error("Could not read that PDF — try another file.")
+
+    if text:
+        m = re.search(r"Subject:\s*([^\n]+)", text, re.I)
+        key = m.group(1).strip() if m else label
+        with st.status("FEP cost-of-care analysis", expanded=True) as status:
+            status.write("Retrieving related OPM guidance — Cortex Search RAG")
+            rag = search_letters(key or label, 4)
+            rag_ctx = "\n".join(f"- {r.get('YEAR')}: {r.get('SUBJECT')} [{r.get('CATEGORY')}]" for r in rag) or "(none)"
+            status.write("Pulling the carrier claims cost mix")
+            cc_ctx = claims_cost_context(int(st.session_state.get("year", 2024)))
+            status.write("Synthesizing FEP cost-of-care impact — Claude 4 Sonnet")
+            assessment = fep_impact(text, rag_ctx, cc_ctx)
+            status.update(label="Analysis complete", state="complete", expanded=False)
+        if assessment:
+            md_panel(assessment)
+        if rag:
+            st.markdown("<div class='section'>Related historical OPM guidance (RAG sources)</div>", unsafe_allow_html=True)
+            for r in rag:
+                st.markdown(f"<div class='rec'><b>{r.get('YEAR')}</b> · {r.get('SUBJECT')} "
+                            f"<i>[{r.get('CATEGORY')}]</i></div>", unsafe_allow_html=True)
+        src("CALL_LETTERS.ANALYTICS.LETTER_SEARCH + CLAIMS.PUBLIC.ENCOUNTERS",
+            f"{len(rag)} related letters retrieved · FEP-grounded impact")
 
 st.markdown("<div style='text-align:center;color:#94a3b8;margin-top:22px;font-size:12px'>"
             "FEP Care Lens AI · Cost of Care Intelligence · Snowflake Cortex · Claude 4 Sonnet</div>",
