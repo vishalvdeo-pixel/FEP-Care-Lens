@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from snowflake.snowpark import Session
 
-st.set_page_config(page_title="CareLens AI", page_icon="◆", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="FEP Care Lens AI", page_icon="◆", layout="wide", initial_sidebar_state="expanded")
 
 MODEL = "claude-4-sonnet"
 SEARCH_SVC = "AUTH_DB.UM.ENCOUNTER_SEARCH"
@@ -377,7 +377,7 @@ def yclause(col='"START"'):
 
 
 with st.sidebar:
-    st.markdown("### ◆ CareLens AI")
+    st.markdown("### ◆ FEP Care Lens AI")
     st.caption("Cost of Care Intelligence")
     st.markdown("---")
     st.selectbox("Plan year", [2024, 2023, 2022, 2021, 2020], key="year")
@@ -396,7 +396,7 @@ with st.sidebar:
 
 st.markdown("""
 <div class="hero">
-  <h1>◆ CareLens AI</h1>
+  <h1>◆ FEP Care Lens AI</h1>
   <p>Cost of Care Intelligence. A research agent that decomposes your question, queries named facilities
   and providers, drills to the record, and surfaces avoidable spend.</p>
   <span class="pill">Research Agent</span><span class="pill">Cortex Search</span>
@@ -659,5 +659,5 @@ with tab_search:
             st.warning("Search index is refreshing, try again in a moment.")
 
 st.markdown("<div style='text-align:center;color:#94a3b8;margin-top:22px;font-size:12px'>"
-            "CareLens AI · Cost of Care Intelligence · Snowflake Cortex · Claude 4 Sonnet</div>",
+            "FEP Care Lens AI · Cost of Care Intelligence · Snowflake Cortex · Claude 4 Sonnet</div>",
             unsafe_allow_html=True)
