@@ -411,16 +411,67 @@ def claims_cost_context(year):
         return "(claims cost mix unavailable)"
 
 
-def fep_impact(text, rag_ctx, claims_ctx):
+def auth_context():
+    try:
+        d = run_df("SELECT OVERALL_DETERMINATION, COUNT(*) CASES FROM AUTH_DB.UM.UM_CASE GROUP BY 1 ORDER BY CASES DESC")
+        sp = run_df("SELECT SERVICE_SPECIALTY, COUNT(*) CASES FROM AUTH_DB.UM.UM_CASE GROUP BY 1 ORDER BY CASES DESC LIMIT 8")
+        return ("Prior-authorization determinations (our utilization management outcomes):\n" + d.to_csv(index=False) +
+                "\nTop service specialties under prior authorization:\n" + sp.to_csv(index=False))
+    except Exception:
+        return "(authorization data unavailable)"
+
+
+def fep_impact(text, rag_ctx, claims_ctx, auth_ctx):
     prompt = (FEP_PERSONA +
-              "Produce a COST OF CARE IMPACT ASSESSMENT in markdown using EXACTLY these headers:\n"
-              "## Key Directives\n## Cost-of-Care Impact\n## Affected Benefits and Members\n## Recommended Carrier Actions\n"
-              "Ground your analysis in the related historical OPM guidance and the carrier's actual claims cost mix "
-              "below. State cost direction (increase or decrease) and cite figures where useful. No preamble.\n\n"
-              "=== THIS CALL LETTER ===\n" + text[:9000] +
-              "\n\n=== RELATED HISTORICAL OPM GUIDANCE (retrieved by Cortex Search) ===\n" + rag_ctx +
-              "\n\n=== CARRIER CLAIMS COST MIX ===\n" + claims_ctx)
+              "Our carrier has received the OPM call letter below. Explain how it impacts OUR MEMBERS, using our "
+              "actual claims cost mix and prior-authorization (utilization management) data provided. Return "
+              "markdown with EXACTLY these headers:\n"
+              "## Key Directives\n## Member Impact\n## Cost-of-Care Impact\n"
+              "## Affected Authorizations and Benefits\n## Recommended Carrier Actions\n"
+              "Be concrete: name the member segments, benefits, and authorization categories affected; state cost "
+              "direction (increase or decrease); cite figures from our data. No preamble.\n\n"
+              "=== THE CALL LETTER ===\n" + text[:9000] +
+              "\n\n=== RELATED HISTORICAL OPM GUIDANCE (Cortex Search) ===\n" + rag_ctx +
+              "\n\n=== OUR CLAIMS COST MIX ===\n" + claims_ctx +
+              "\n\n=== OUR PRIOR-AUTHORIZATION (UM) DATA ===\n" + auth_ctx)
     return ai(prompt)
+
+
+EXTRACT_SCHEMA = ("{"
+    "'contract_year':'What plan or contract year do these instructions apply to? Four digits only.',"
+    "'programs':'Which programs apply: FEHB, PSHB, or both?',"
+    "'effective_date':'What is the effective or applicable date?',"
+    "'cost_sharing':'What changes to cost sharing, copays, deductibles, coinsurance, or out-of-pocket limits are described? If none, answer None.',"
+    "'premium_rate':'What premium, rate, or financial-reporting requirements are described? If none, answer None.',"
+    "'pharmacy':'What pharmacy or prescription-drug provisions are described? If none, answer None.',"
+    "'benefit_changes':'What changes to covered benefits are described? If none, answer None.',"
+    "'deadlines':'What submission deadlines and their dates must carriers meet? If none, answer None.'"
+    "}")
+
+
+def extract_fields(file_name):
+    try:
+        df = run_df(f"SELECT AI_EXTRACT(file => TO_FILE('@CALL_LETTERS.RAW.UPLOADS','{esc(file_name)}'), "
+                    f"responseFormat => {EXTRACT_SCHEMA}) AS E")
+        raw = df.iloc[0]["E"]
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+        return obj.get("response", obj) if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def render_fields(f):
+    rows = [("Contract Year", f.get("contract_year")), ("Programs", f.get("programs")),
+            ("Effective Date", f.get("effective_date")), ("Cost Sharing", f.get("cost_sharing")),
+            ("Premium / Rate", f.get("premium_rate")), ("Pharmacy", f.get("pharmacy")),
+            ("Benefit Changes", f.get("benefit_changes")), ("Submission Deadlines", f.get("deadlines"))]
+    html = "".join(
+        "<div style='margin-bottom:11px'>"
+        f"<div style='color:#64748b;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px'>{k}</div>"
+        f"<div style='color:#1e293b;font-size:13.5px;line-height:1.4'>{(v if v and str(v).lower() != 'none' else '—')}</div></div>"
+        for k, v in rows)
+    st.markdown(f"<div class='panel'><b style='color:#1e3a8a;font-size:15px'>AI_EXTRACT — structured provisions</b>"
+                f"<br><br>{html}</div>", unsafe_allow_html=True)
 
 
 def yclause(col='"START"'):
@@ -711,59 +762,51 @@ with tab_search:
             st.warning("Search index is refreshing, try again in a moment.")
 
 with tab_letter:
-    st.markdown("<div class='section'>FEP Call Letter — Cost of Care Impact</div>", unsafe_allow_html=True)
-    st.caption("Analyze an OPM FEHB/PSHB carrier letter and see its cost-of-care impact, grounded in 568 historical "
-               "letters (Cortex Search RAG) and your claims cost mix.")
-    mode = st.radio("src", ["Browse the 568 OPM letters", "Upload a call letter PDF"],
-                    horizontal=True, label_visibility="collapsed")
+    st.markdown("<div class='section'>FEP Call Letter — Member &amp; Cost Impact</div>", unsafe_allow_html=True)
+    st.caption("Attach an OPM FEHB/PSHB carrier letter. Cortex reads it and explains how it impacts your members, "
+               "grounded in your claims cost mix, your prior-authorization (UM) data, and 568 historical letters (RAG).")
+    up = st.file_uploader("Attach an OPM FEHB/PSHB call letter PDF", type=["pdf"])
     text, label = "", ""
-    if mode.startswith("Browse"):
-        li = letters_intel()
-        yrs = sorted([int(y) for y in li["YEAR"].dropna().unique()], reverse=True)
-        cc = st.columns(2)
-        yfil = cc[0].selectbox("Year", yrs)
-        sub = li[li["YEAR"] == yfil].reset_index(drop=True)
-        opts = (sub["FILE_NAME"] + "  —  " + sub["SUBJECT"].str[:64]).tolist()
-        pick = cc[1].selectbox("Letter", opts) if opts else None
-        if pick:
-            st.caption(f"Category: {sub.loc[opts.index(pick), 'CATEGORY']}  ·  Programs: {sub.loc[opts.index(pick), 'PROGRAMS']}")
-            if st.button("Analyze cost-of-care impact", type="primary", use_container_width=True):
-                label = pick.split("  —  ")[0]
-                text = letter_text(label)
-    else:
-        up = st.file_uploader("Upload an OPM FEHB/PSHB call letter PDF", type=["pdf"])
-        if up is not None and st.button("Analyze uploaded letter", type="primary", use_container_width=True):
-            try:
-                session.file.put_stream(up, f"@CALL_LETTERS.RAW.UPLOADS/{up.name}",
-                                        auto_compress=False, overwrite=True)
-                with st.spinner("Cortex is reading the PDF (AI_PARSE_DOCUMENT)…"):
-                    text = run_df("SELECT TO_VARCHAR(AI_PARSE_DOCUMENT(TO_FILE('@CALL_LETTERS.RAW.UPLOADS',"
-                                  f"'{esc(up.name)}'),{{'mode':'LAYOUT'}}):content) AS T").iloc[0]["T"]
-                    label = up.name
-            except Exception:
-                st.error("Could not read that PDF — try another file.")
+    if up is not None and st.button("Analyze member & cost impact", type="primary", use_container_width=True):
+        try:
+            session.file.put_stream(up, f"@CALL_LETTERS.RAW.UPLOADS/{up.name}",
+                                    auto_compress=False, overwrite=True)
+            with st.spinner("Cortex is reading the PDF (AI_PARSE_DOCUMENT)…"):
+                text = run_df("SELECT TO_VARCHAR(AI_PARSE_DOCUMENT(TO_FILE('@CALL_LETTERS.RAW.UPLOADS',"
+                              f"'{esc(up.name)}'),{{'mode':'LAYOUT'}}):content) AS T").iloc[0]["T"]
+                label = up.name
+        except Exception:
+            st.error("Could not read that PDF — try another file.")
 
     if text:
         m = re.search(r"Subject:\s*([^\n]+)", text, re.I)
         key = m.group(1).strip() if m else label
-        with st.status("FEP cost-of-care analysis", expanded=True) as status:
+        with st.status("Analyzing member & cost impact", expanded=True) as status:
+            status.write("Reading the call letter and extracting directives")
             status.write("Retrieving related OPM guidance — Cortex Search RAG")
             rag = search_letters(key or label, 4)
             rag_ctx = "\n".join(f"- {r.get('YEAR')}: {r.get('SUBJECT')} [{r.get('CATEGORY')}]" for r in rag) or "(none)"
-            status.write("Pulling the carrier claims cost mix")
+            status.write("Extracting structured cost provisions — AI_EXTRACT")
+            fields = extract_fields(label)
+            status.write("Pulling our claims cost mix and prior-authorization (UM) data")
             cc_ctx = claims_cost_context(int(st.session_state.get("year", 2024)))
-            status.write("Synthesizing FEP cost-of-care impact — Claude 4 Sonnet")
-            assessment = fep_impact(text, rag_ctx, cc_ctx)
+            au_ctx = auth_context()
+            status.write("Synthesizing member & cost-of-care impact — Claude 4 Sonnet")
+            assessment = fep_impact(text, rag_ctx, cc_ctx, au_ctx)
             status.update(label="Analysis complete", state="complete", expanded=False)
-        if assessment:
-            md_panel(assessment)
+        L, R = st.columns([3, 2])
+        with L:
+            if assessment:
+                md_panel(assessment)
+        with R:
+            render_fields(fields)
         if rag:
             st.markdown("<div class='section'>Related historical OPM guidance (RAG sources)</div>", unsafe_allow_html=True)
             for r in rag:
                 st.markdown(f"<div class='rec'><b>{r.get('YEAR')}</b> · {r.get('SUBJECT')} "
                             f"<i>[{r.get('CATEGORY')}]</i></div>", unsafe_allow_html=True)
-        src("CALL_LETTERS.ANALYTICS.LETTER_SEARCH + CLAIMS.PUBLIC.ENCOUNTERS",
-            f"{len(rag)} related letters retrieved · FEP-grounded impact")
+        src("CALL_LETTERS.ANALYTICS.LETTER_SEARCH + CLAIMS.PUBLIC.ENCOUNTERS + AUTH_DB.UM.UM_CASE",
+            f"{len(rag)} related letters · grounded in claims + prior-auth data")
 
 st.markdown("<div style='text-align:center;color:#94a3b8;margin-top:22px;font-size:12px'>"
             "FEP Care Lens AI · Cost of Care Intelligence · Snowflake Cortex · Claude 4 Sonnet</div>",
