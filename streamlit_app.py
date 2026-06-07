@@ -64,25 +64,59 @@ def connect():
            "\n-----END PRIVATE KEY-----\n")
     pk = serialization.load_pem_private_key(pem.encode(), password=None, backend=default_backend())
     der = pk.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
-    return Session.builder.configs({
+    s = Session.builder.configs({
         "account": cfg["account"], "user": cfg["user"], "private_key": der,
         "role": cfg.get("role", "ACCOUNTADMIN"), "warehouse": cfg.get("warehouse", "COMPUTE_WH"),
-        "database": "CLAIMS", "schema": "PUBLIC"}).create()
+        "database": "CLAIMS", "schema": "PUBLIC",
+        "client_session_keep_alive": True}).create()
+    try:
+        s.sql(f"ALTER WAREHOUSE {cfg.get('warehouse', 'COMPUTE_WH')} RESUME IF SUSPENDED").collect()
+    except Exception:
+        pass
+    return s
 
 
 session = connect()
 
 
+def reconnect():
+    global session
+    try:
+        connect.clear()
+    except Exception:
+        pass
+    session = connect()
+
+
 def run_df(sql):
-    return session.sql(sql).to_pandas()
+    global session
+    for attempt in range(3):
+        try:
+            return session.sql(sql).to_pandas()
+        except Exception:
+            if attempt < 2:
+                reconnect()
+                time.sleep(1)
+                continue
+            raise
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
 def cdf(sql):
-    return session.sql(sql).to_pandas()
+    global session
+    for attempt in range(3):
+        try:
+            return session.sql(sql).to_pandas()
+        except Exception:
+            if attempt < 2:
+                reconnect()
+                time.sleep(1)
+                continue
+            raise
 
 
 def ai(prompt, model=MODEL):
+    global session
     safe = prompt.replace("$$", "")
     for attempt in range(2):
         try:
@@ -96,6 +130,7 @@ def ai(prompt, model=MODEL):
             return out
         except Exception:
             if attempt == 0:
+                reconnect()
                 time.sleep(1)
                 continue
             return ""
@@ -345,7 +380,7 @@ with st.sidebar:
             st.session_state["q"] = s
     st.markdown("---")
     st.markdown("**Powered by Snowflake Cortex**")
-    st.markdown("AI_COMPLETE agent · AI_CLASSIFY · AI_FILTER · AI_SUMMARIZE_AGG · CORTEX SEARCH · Claude 4 Sonnet")
+    st.markdown("AI_COMPLETE agent · AI_CLASSIFY · CORTEX SEARCH · Claude 4 Sonnet")
 
 
 st.markdown("""
@@ -524,30 +559,34 @@ with tab_savings:
         st.plotly_chart(finalize(fig, 360), use_container_width=True)
     src("CLAIMS.PUBLIC.ENCOUNTERS", "2,000,000 encounters, percentile concentration")
 
-    st.markdown("<div class='section'>AI-identified avoidable spend</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section'>Potentially preventable admissions</div>", unsafe_allow_html=True)
+    st.caption("Ambulatory-care-sensitive conditions (AHRQ Prevention Quality Indicators) admitted to inpatient, "
+               "emergency, or urgent care. These admissions can often be prevented with timely primary and "
+               "preventive care, making them a defensible savings target.")
     try:
         av = avoidable()
-        av["AVOIDABLE"] = av["AVOIDABLE"].astype(bool)
-        avoid_cost = float(av.loc[av["AVOIDABLE"], "COST"].sum()); total = float(av["COST"].sum())
-        flagged = av[av["AVOIDABLE"]].sort_values("COST", ascending=False)
+        prevent_cost = float(av["COST"].sum())
+        flagged = av.sort_values("COST", ascending=False)
         c2 = st.columns([1, 2])
-        kpi(c2[0], "Avoidable Spend", money(avoid_cost),
-            f"{(avoid_cost/total*100 if total else 0):.0f}% of top-driver cost", warn=True)
+        kpi(c2[0], "Preventable Admission Cost", money(prevent_cost),
+            f"{prevent_cost/float(g.COST)*100:.1f}% of total cost of care", warn=True)
         fig = px.bar(flagged.head(10), x="COST", y="REASON", orientation="h",
-                     title="Largest avoidable cost drivers", color="COST", color_continuous_scale="Reds")
+                     title="Preventable admissions by condition", color="COST", color_continuous_scale="Blues")
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         c2[1].plotly_chart(finalize(fig, 340), use_container_width=True)
-        src("AUTH_DB.UM.AVOIDABLE_SPEND", f"40 cost reasons, {len(flagged)} flagged avoidable by AI_FILTER")
-        with st.spinner("Summarizing avoidable themes"):
-            try:
-                theme = run_df("SELECT AI_SUMMARIZE_AGG(REASON) S FROM AUTH_DB.UM.AVOIDABLE_SPEND WHERE AVOIDABLE").iloc[0]["S"]
-                st.markdown(f"<div class='panel'>{theme}</div>", unsafe_allow_html=True)
-            except Exception:
-                pass
-        with st.expander("Avoidable reasons detail"):
+        src("AUTH_DB.UM.AVOIDABLE_SPEND",
+            f"{len(flagged)} ambulatory-care-sensitive conditions in acute settings",
+            "ENCOUNTERCLASS in inpatient, emergency, urgentcare")
+        with st.spinner("Summarizing the clinical opportunity"):
+            theme = ai("In two sentences for a payer audience, explain why these admissions are considered "
+                       "potentially preventable and the primary-care action that reduces them.\nConditions:\n"
+                       + flagged[["REASON", "COST"]].to_csv(index=False))
+        if theme:
+            st.markdown(f"<div class='panel'>{theme}</div>", unsafe_allow_html=True)
+        with st.expander("Preventable conditions detail"):
             st.dataframe(money_cols(flagged[["REASON", "COST", "N"]], ["COST"]), use_container_width=True)
     except Exception:
-        st.info("Avoidable analysis unavailable")
+        st.info("Preventable-admission analysis unavailable")
 
     st.markdown("<div class='section'>Recommended interventions</div>", unsafe_allow_html=True)
     with st.spinner("Drafting a quantified savings plan"):
