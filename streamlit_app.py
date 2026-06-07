@@ -228,6 +228,7 @@ def tables_in(sql):
 
 
 def nl_to_sql(q, schema):
+    y = int(st.session_state.get("year", 2024))
     p = ("You are an expert Snowflake SQL analyst for healthcare cost of care. Write ONE valid Snowflake "
          "SELECT (no DML or DDL) answering the question. Use ONLY these tables and columns:\n\n" + schema +
          "\n\nRules:\n1. Fully qualify tables as DATABASE.SCHEMA.TABLE.\n"
@@ -237,8 +238,10 @@ def nl_to_sql(q, schema):
          "ENCOUNTERS.ORGANIZATION=AUTH_DB.UM.ORG_DIM.ID (NAME); use ORG_DIM, never CLAIMS.PUBLIC.ORGANIZATIONS "
          "which has duplicate rows. For provider names join ENCOUNTERS.PROVIDER=PROVIDERS.ID (NAME, SPECIALITY). "
          "Do not use payer. Never return raw UUIDs.\n"
-         "4. Prefer GROUP BY aggregations, alias to clean names, add LIMIT 1000.\n"
-         "5. Return ONLY raw SQL, no markdown.\n\nQuestion: " + q)
+         f"4. Scope to plan year {y}: filter ENCOUNTERS with "
+         f"TO_TIMESTAMP_NTZ(\"START\") >= '{y}-01-01' AND TO_TIMESTAMP_NTZ(\"START\") < '{y + 1}-01-01'.\n"
+         "5. Prefer GROUP BY aggregations, alias to clean names, add LIMIT 1000.\n"
+         "6. Return ONLY raw SQL, no markdown.\n\nQuestion: " + q)
     return clean_sql(ai(p))
 
 
@@ -368,9 +371,17 @@ def cortex_search(query, limit=12):
     return df
 
 
+def yclause(col='"START"'):
+    y = int(st.session_state.get("year", 2024))
+    return f"TO_TIMESTAMP_NTZ({col}) >= '{y}-01-01' AND TO_TIMESTAMP_NTZ({col}) < '{y + 1}-01-01'"
+
+
 with st.sidebar:
     st.markdown("### ◆ CareLens AI")
     st.caption("Cost of Care Intelligence")
+    st.markdown("---")
+    st.selectbox("Plan year", [2024, 2023, 2022, 2021, 2020], key="year")
+    st.caption("All figures are scoped to the selected plan year.")
     st.markdown("---")
     st.markdown("**Start with a question**")
     for s in ["What is driving our cost of care and where should we focus",
@@ -389,20 +400,24 @@ st.markdown("""
   <p>Cost of Care Intelligence. A research agent that decomposes your question, queries named facilities
   and providers, drills to the record, and surfaces avoidable spend.</p>
   <span class="pill">Research Agent</span><span class="pill">Cortex Search</span>
-  <span class="pill">Claude 4 Sonnet</span><span class="pill">$6.3B claims modeled</span>
+  <span class="pill">Claude 4 Sonnet</span><span class="pill">Annual cost of care</span>
 </div>
 """, unsafe_allow_html=True)
 
+YR = int(st.session_state.get("year", 2024))
+st.markdown(f"<div class='section'>Plan year {YR}</div>", unsafe_allow_html=True)
 try:
-    g = cdf("""SELECT SUM(TOTAL_CLAIM_COST) COST, AVG(TOTAL_CLAIM_COST) AVGC,
+    g = cdf(f"""SELECT SUM(TOTAL_CLAIM_COST) COST, AVG(TOTAL_CLAIM_COST) AVGC,
                       SUM(TOTAL_CLAIM_COST-PAYER_COVERAGE) OOP,
                       SUM(PAYER_COVERAGE)/NULLIF(SUM(TOTAL_CLAIM_COST),0) COV,
-                      COUNT(DISTINCT PATIENT) MEM, COUNT(*) ENC FROM CLAIMS.PUBLIC.ENCOUNTERS""").iloc[0]
-    conc = cdf("""WITH r AS (SELECT TOTAL_CLAIM_COST c, NTILE(100) OVER (ORDER BY TOTAL_CLAIM_COST DESC) p
-                             FROM CLAIMS.PUBLIC.ENCOUNTERS) SELECT SUM(IFF(p<=5,c,0))/NULLIF(SUM(c),0) TOP5 FROM r""").iloc[0]
+                      COUNT(DISTINCT PATIENT) MEM, COUNT(*) ENC FROM CLAIMS.PUBLIC.ENCOUNTERS
+                WHERE {yclause()}""").iloc[0]
+    conc = cdf(f"""WITH r AS (SELECT TOTAL_CLAIM_COST c, NTILE(100) OVER (ORDER BY TOTAL_CLAIM_COST DESC) p
+                              FROM CLAIMS.PUBLIC.ENCOUNTERS WHERE {yclause()})
+                   SELECT SUM(IFF(p<=5,c,0))/NULLIF(SUM(c),0) TOP5 FROM r""").iloc[0]
     k = st.columns(5)
-    kpi(k[0], "Total Cost of Care", money(g.COST), f"{int(g.MEM):,} members")
-    kpi(k[1], "Avg Cost / Encounter", money(g.AVGC), f"{int(g.ENC):,} encounters")
+    kpi(k[0], "Total Cost of Care", money(g.COST), f"{int(g.MEM):,} members · {YR}")
+    kpi(k[1], "Cost / Member / Year", money(g.COST / max(int(g.MEM), 1)), f"{int(g.ENC):,} encounters")
     kpi(k[2], "Member Out-of-Pocket", money(g.OOP), f"{(1-g.COV)*100:,.0f}% of billed", warn=True)
     kpi(k[3], "Insurance Coverage", f"{g.COV*100:,.1f}%", "of billed cost")
     kpi(k[4], "Top 5% Cost Share", f"{conc.TOP5*100:,.0f}%", "high-cost claimants", warn=True)
@@ -414,24 +429,25 @@ try:
     kd = st.session_state.get("kdrill")
     if kd:
         if kd == "Top records":
-            rec = cdf("""SELECT o.NAME AS FACILITY, e."START"::DATE AS SERVICE_DATE, e.ENCOUNTERCLASS AS SETTING,
-                                COALESCE(e.REASONDESCRIPTION,'—') AS CLINICAL_REASON, e.TOTAL_CLAIM_COST AS BILLED
+            rec = cdf(f"""SELECT o.NAME AS FACILITY, e."START"::DATE AS SERVICE_DATE, e.ENCOUNTERCLASS AS SETTING,
+                                COALESCE(NULLIF(e.REASONDESCRIPTION,'None'),'—') AS CLINICAL_REASON, e.TOTAL_CLAIM_COST AS BILLED
                          FROM CLAIMS.PUBLIC.ENCOUNTERS e JOIN AUTH_DB.UM.ORG_DIM o ON o.ID=e.ORGANIZATION
+                         WHERE {yclause('e."START"')}
                          ORDER BY e.TOTAL_CLAIM_COST DESC LIMIT 50""")
             st.markdown(f"<div class='section'>{kd}</div>", unsafe_allow_html=True)
             st.dataframe(money_cols(rec, ["BILLED"]), use_container_width=True, height=300)
-            src("ENCOUNTERS join ORGANIZATIONS", "top 50 highest-cost encounters", "ORGANIZATION=ID")
+            src("ENCOUNTERS join ORGANIZATIONS", f"top 50 highest-cost encounters in {YR}", "ORGANIZATION=ID")
         else:
             metric = {"Cost by setting": "SUM(TOTAL_CLAIM_COST)", "Avg by setting": "AVG(TOTAL_CLAIM_COST)",
                       "OOP by setting": "SUM(TOTAL_CLAIM_COST-PAYER_COVERAGE)",
                       "Coverage by setting": "SUM(PAYER_COVERAGE)/NULLIF(SUM(TOTAL_CLAIM_COST),0)*100"}[kd]
-            dd = cdf(f"SELECT ENCOUNTERCLASS AS SETTING, {metric} AS METRIC FROM CLAIMS.PUBLIC.ENCOUNTERS GROUP BY 1 ORDER BY 2 DESC")
+            dd = cdf(f"SELECT ENCOUNTERCLASS AS SETTING, {metric} AS METRIC FROM CLAIMS.PUBLIC.ENCOUNTERS WHERE {yclause()} GROUP BY 1 ORDER BY 2 DESC")
             st.markdown(f"<div class='section'>{kd}</div>", unsafe_allow_html=True)
             f = px.bar(dd, x="SETTING", y="METRIC", color="SETTING", color_discrete_sequence=SEQ)
             f.update_layout(showlegend=False)
             st.plotly_chart(finalize(f, 320), use_container_width=True)
-            src("CLAIMS.PUBLIC.ENCOUNTERS", "grouped by care setting")
-    src("CLAIMS.PUBLIC.ENCOUNTERS", f"{int(g.ENC):,} encounter records aggregated")
+            src("CLAIMS.PUBLIC.ENCOUNTERS", f"grouped by care setting · {YR}")
+    src("CLAIMS.PUBLIC.ENCOUNTERS", f"{int(g.ENC):,} encounter records in {YR}")
 except Exception:
     st.info("Loading cost metrics")
     g = pd.Series({"COST": 6.26e9}); conc = pd.Series({"TOP5": 0.4})
@@ -477,17 +493,18 @@ DIMS = {
                      filt="o.NAME", chart="hbar", srcname="ENCOUNTERS join ORG_DIM (deduped)", keys="ORGANIZATION=ID"),
     "Provider": dict(expr="p.NAME", join="JOIN CLAIMS.PUBLIC.PROVIDERS p ON p.ID=e.PROVIDER",
                      filt="p.NAME", chart="hbar", srcname="ENCOUNTERS join PROVIDERS", keys="PROVIDER=ID"),
-    "Clinical Reason": dict(expr="COALESCE(e.REASONDESCRIPTION,'Unspecified')", join="", chart="treemap",
-                            filt="COALESCE(e.REASONDESCRIPTION,'Unspecified')", srcname="CLAIMS.PUBLIC.ENCOUNTERS", keys=""),
+    "Clinical Reason": dict(expr="COALESCE(NULLIF(NULLIF(e.REASONDESCRIPTION,''),'None'),'Not specified')", join="", chart="treemap",
+                            filt="COALESCE(NULLIF(NULLIF(e.REASONDESCRIPTION,''),'None'),'Not specified')", srcname="CLAIMS.PUBLIC.ENCOUNTERS", keys=""),
 }
 
 with tab_drivers:
-    st.markdown("<div class='section'>What is driving cost of care</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='section'>What is driving cost of care · {YR}</div>", unsafe_allow_html=True)
     dim = st.radio("by", list(DIMS.keys()), horizontal=True, label_visibility="collapsed")
     d = DIMS[dim]
     drv = cdf(f"""SELECT {d['expr']} AS SEGMENT, SUM(e.TOTAL_CLAIM_COST) COST, COUNT(*) ENCOUNTERS,
                          AVG(e.TOTAL_CLAIM_COST) AVG_COST
-                  FROM CLAIMS.PUBLIC.ENCOUNTERS e {d['join']} GROUP BY 1 ORDER BY COST DESC LIMIT 12""")
+                  FROM CLAIMS.PUBLIC.ENCOUNTERS e {d['join']} WHERE {yclause('e."START"')}
+                  GROUP BY 1 ORDER BY COST DESC LIMIT 12""")
     st.caption("Click a segment, or use the selector, to drill into the underlying encounter records.")
     if d["chart"] == "treemap":
         cf = px.treemap(drv, path=["SEGMENT"], values="COST", color="COST", color_continuous_scale="Blues",
@@ -511,17 +528,18 @@ with tab_drivers:
 
     st.markdown(f"<div class='section'>Records for {seg}</div>", unsafe_allow_html=True)
     det = cdf(f"""SELECT e.ID AS ENCOUNTER_ID, e."START"::DATE AS SERVICE_DATE, e.ENCOUNTERCLASS AS SETTING,
-                         e."DESCRIPTION" AS ENCOUNTER, COALESCE(e.REASONDESCRIPTION,'—') AS CLINICAL_REASON,
+                         e."DESCRIPTION" AS ENCOUNTER, COALESCE(NULLIF(e.REASONDESCRIPTION,'None'),'—') AS CLINICAL_REASON,
                          e.TOTAL_CLAIM_COST AS BILLED, e.PAYER_COVERAGE AS COVERED,
                          (e.TOTAL_CLAIM_COST-e.PAYER_COVERAGE) AS MEMBER_OOP
-                  FROM CLAIMS.PUBLIC.ENCOUNTERS e {d['join']} WHERE {d['filt']} = '{esc(seg)}'
+                  FROM CLAIMS.PUBLIC.ENCOUNTERS e {d['join']}
+                  WHERE {d['filt']} = '{esc(seg)}' AND {yclause('e."START"')}
                   ORDER BY e.TOTAL_CLAIM_COST DESC LIMIT 200""")
     dk = st.columns(3)
     kpi(dk[0], "Records shown", f"{len(det):,}")
     kpi(dk[1], "Billed", money(det["BILLED"].sum()))
     kpi(dk[2], "Member OOP", money(det["MEMBER_OOP"].sum()), warn=True)
     st.dataframe(money_cols(det, ["BILLED", "COVERED", "MEMBER_OOP"]), use_container_width=True, height=320)
-    src(d["srcname"], f"top {len(det)} records where {d['filt']} = '{seg}'", d["keys"])
+    src(d["srcname"], f"top {len(det)} records in {YR} where {d['filt']} = '{seg}'", d["keys"])
 
     with st.spinner("Summarizing the drivers"):
         narr = ai("You are a healthcare cost strategist. In three sentences explain what drives spend given "
@@ -531,18 +549,29 @@ with tab_drivers:
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def avoidable():
-    return run_df("SELECT REASON, COST, N, AVOIDABLE FROM AUTH_DB.UM.AVOIDABLE_SPEND ORDER BY COST DESC")
+def avoidable(year):
+    yc = (f'TO_TIMESTAMP_NTZ("START") >= \'{year}-01-01\' '
+          f'AND TO_TIMESTAMP_NTZ("START") < \'{year + 1}-01-01\'')
+    kws = ["heart failure", "obstructive bronchitis", "emphysema", "asthma", "infective cystitis",
+           "urinary tract infection", "pyelonephritis", "cellulitis", "dehydration", "diabet",
+           "hypertensi", "angina", "bacterial pneumonia", "seizure"]
+    like = " OR ".join(f"LOWER(COALESCE(REASONDESCRIPTION, \"DESCRIPTION\")) LIKE '%{k}%'" for k in kws)
+    return run_df(f"""SELECT COALESCE(NULLIF(REASONDESCRIPTION,'None'), "DESCRIPTION") AS REASON,
+                             SUM(TOTAL_CLAIM_COST) COST, COUNT(*) N
+                      FROM CLAIMS.PUBLIC.ENCOUNTERS
+                      WHERE ENCOUNTERCLASS IN ('inpatient','emergency','urgentcare')
+                        AND {yc} AND ({like})
+                      GROUP BY 1 ORDER BY COST DESC""")
 
 
 with tab_savings:
-    st.markdown("<div class='section'>Where the savings are</div>", unsafe_allow_html=True)
-    conc2 = cdf("""WITH r AS (SELECT TOTAL_CLAIM_COST c, NTILE(100) OVER (ORDER BY TOTAL_CLAIM_COST DESC) p
-                             FROM CLAIMS.PUBLIC.ENCOUNTERS)
-                  SELECT SUM(IFF(p=1,c,0))/NULLIF(SUM(c),0) T1, SUM(IFF(p<=5,c,0))/NULLIF(SUM(c),0) T5,
-                         SUM(IFF(p<=10,c,0))/NULLIF(SUM(c),0) T10 FROM r""").iloc[0]
-    setting = cdf("""SELECT ENCOUNTERCLASS SEGMENT, SUM(TOTAL_CLAIM_COST) COST, AVG(TOTAL_CLAIM_COST) AVG_COST
-                     FROM CLAIMS.PUBLIC.ENCOUNTERS GROUP BY 1 ORDER BY COST DESC""")
+    st.markdown(f"<div class='section'>Where the savings are · {YR}</div>", unsafe_allow_html=True)
+    conc2 = cdf(f"""WITH r AS (SELECT TOTAL_CLAIM_COST c, NTILE(100) OVER (ORDER BY TOTAL_CLAIM_COST DESC) p
+                              FROM CLAIMS.PUBLIC.ENCOUNTERS WHERE {yclause()})
+                   SELECT SUM(IFF(p=1,c,0))/NULLIF(SUM(c),0) T1, SUM(IFF(p<=5,c,0))/NULLIF(SUM(c),0) T5,
+                          SUM(IFF(p<=10,c,0))/NULLIF(SUM(c),0) T10 FROM r""").iloc[0]
+    setting = cdf(f"""SELECT ENCOUNTERCLASS SEGMENT, SUM(TOTAL_CLAIM_COST) COST, AVG(TOTAL_CLAIM_COST) AVG_COST
+                      FROM CLAIMS.PUBLIC.ENCOUNTERS WHERE {yclause()} GROUP BY 1 ORDER BY COST DESC""")
     L, R = st.columns([2, 3])
     with L:
         gfig = go.Figure(go.Indicator(mode="gauge+number", value=float(conc2.T5) * 100, number={"suffix": "%"},
@@ -557,14 +586,14 @@ with tab_savings:
         fig = px.bar(setting, x="SEGMENT", y="COST", title="Total cost by care setting", color="AVG_COST",
                      color_continuous_scale="Blues", labels={"AVG_COST": "Avg cost"})
         st.plotly_chart(finalize(fig, 360), use_container_width=True)
-    src("CLAIMS.PUBLIC.ENCOUNTERS", "2,000,000 encounters, percentile concentration")
+    src("CLAIMS.PUBLIC.ENCOUNTERS", f"{YR} encounters, percentile concentration")
 
     st.markdown("<div class='section'>Potentially preventable admissions</div>", unsafe_allow_html=True)
     st.caption("Ambulatory-care-sensitive conditions (AHRQ Prevention Quality Indicators) admitted to inpatient, "
                "emergency, or urgent care. These admissions can often be prevented with timely primary and "
                "preventive care, making them a defensible savings target.")
     try:
-        av = avoidable()
+        av = avoidable(YR)
         prevent_cost = float(av["COST"].sum())
         flagged = av.sort_values("COST", ascending=False)
         c2 = st.columns([1, 2])
@@ -574,8 +603,8 @@ with tab_savings:
                      title="Preventable admissions by condition", color="COST", color_continuous_scale="Blues")
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         c2[1].plotly_chart(finalize(fig, 340), use_container_width=True)
-        src("AUTH_DB.UM.AVOIDABLE_SPEND",
-            f"{len(flagged)} ambulatory-care-sensitive conditions in acute settings",
+        src("CLAIMS.PUBLIC.ENCOUNTERS",
+            f"{len(flagged)} ambulatory-care-sensitive conditions in acute settings · {YR}",
             "ENCOUNTERCLASS in inpatient, emergency, urgentcare")
         with st.spinner("Summarizing the clinical opportunity"):
             theme = ai("In two sentences for a payer audience, explain why these admissions are considered "
