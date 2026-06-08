@@ -550,7 +550,8 @@ try:
             f.update_layout(showlegend=False)
             st.plotly_chart(finalize(f, 320), use_container_width=True)
             src("CLAIMS.PUBLIC.ENCOUNTERS", f"grouped by care setting · {YR}")
-    src("CLAIMS.PUBLIC.ENCOUNTERS", f"{int(g.ENC):,} encounter records in {YR}")
+    src("CLAIMS.PUBLIC.ENCOUNTERS (cost fact)",
+        f"{int(g.ENC):,} encounter records in {YR} · enriched via AUTH_DB.UM.ORG_DIM + PROVIDERS on drill-down")
 except Exception:
     st.info("Loading cost metrics")
     g = pd.Series({"COST": 6.26e9}); conc = pd.Series({"TOP5": 0.4})
